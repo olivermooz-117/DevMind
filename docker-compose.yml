@@ -1,0 +1,26 @@
+services:
+  backend:
+    build: ./backend
+    ports:
+      - "5000:5000"
+    environment:
+      HOST: 0.0.0.0
+      OLLAMA_URL: http://host.docker.internal:11434
+      DEVMIND_DATA_DIR: /app/data
+    volumes:
+      - devmind-data:/app/data
+      - /home:/home:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  frontend:
+    build: ./frontend
+    ports:
+      - "3000:3000"
+    environment:
+      BACKEND_URL: http://backend:5000
+    depends_on:
+      - backend
+
+volumes:
+  devmind-data:

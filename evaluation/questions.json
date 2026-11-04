@@ -1,0 +1,18 @@
+[
+  {
+    "question": "Where is the application health endpoint implemented?",
+    "expected_topic": "health endpoint"
+  },
+  {
+    "question": "How does the application connect to Ollama?",
+    "expected_topic": "Ollama client"
+  },
+  {
+    "question": "Where are repository code chunks stored?",
+    "expected_topic": "database"
+  },
+  {
+    "question": "How does semantic search rank code chunks?",
+    "expected_topic": "cosine similarity"
+  }
+]

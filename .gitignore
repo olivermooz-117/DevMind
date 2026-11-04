@@ -1,0 +1,51 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Virtual environments
+venv/
+.venv/
+**/venv/
+**/.venv/
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Environment variables and secrets
+.env
+.env.*
+!.env.example
+
+# Editors
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+
+# Local databases and generated data
+*.db
+*.sqlite
+*.sqlite3
+backend/data/
+
+# Node.js
+node_modules/
+frontend/node_modules/
+.next/
+frontend/.next/
+out/
+frontend/out/
+
+# Build and coverage output
+dist/
+build/
+coverage/
+
+# Logs and temporary files
+*.log
+*.tmp
+*.bak
