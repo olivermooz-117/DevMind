@@ -8,33 +8,49 @@ sys.path.insert(0, str(BACKEND))
 
 from devmind.retrieval import search_code
 
+TOP_K = 5
+
+
+def reciprocal_rank(retrieved, expected):
+    for rank, path in enumerate(retrieved, start=1):
+        if path in expected:
+            return 1.0 / rank
+    return 0.0
+
 
 def main():
     repo_path = os.environ.get("DEVMIND_REPO_PATH")
 
     if not repo_path:
-        print("Set DEVMIND_REPO_PATH to the absolute path of an indexed repository.")
+        print("Set DEVMIND_REPO_PATH to the path of an already indexed repository.")
         return 1
 
+    repo_path = str(Path(repo_path).expanduser().resolve())
     questions_path = Path(__file__).with_name("questions.json")
     questions = json.loads(questions_path.read_text(encoding="utf-8"))
 
     hits = 0
+    total_reciprocal_rank = 0.0
 
     for item in questions:
-        results = search_code(item["question"], repo_path=repo_path, limit=5)
-        found = bool(results)
-        hits += int(found)
+        results = search_code(item["question"], repo_path=repo_path, limit=TOP_K)
+        retrieved = [result["file_path"] for result in results]
+        score = reciprocal_rank(retrieved, set(item["expected_files"]))
+
+        hits += int(score > 0)
+        total_reciprocal_rank += score
 
         print(f"\nQuestion: {item['question']}")
-        print(f"Expected topic: {item['expected_topic']}")
-        print(f"Retrieved results: {len(results)}")
+        print(f"Expected: {', '.join(item['expected_files'])}")
+        print(f"Reciprocal rank: {score:.2f}")
 
-        for result in results:
-            print(f"  {result['file_path']} — score {result['score']}")
+        for rank, path in enumerate(retrieved, start=1):
+            print(f"  {rank}. {path}")
 
-    print(f"\nRetrieval availability: {hits}/{len(questions)}")
-    print("This is a basic retrieval smoke test, not a full answer-quality benchmark.")
+    total = len(questions)
+    print(f"\nhit@{TOP_K}: {hits}/{total}")
+    print(f"MRR: {total_reciprocal_rank / total:.3f}")
+    print("Retrieval only. Answer correctness still needs manual review.")
     return 0
 
 

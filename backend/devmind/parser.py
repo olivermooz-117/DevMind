@@ -33,6 +33,21 @@ CLASS_NODES = {
     "enum_declaration",
 }
 
+# Nodes that wrap the real definition (decorators, `export ...`).
+WRAPPER_NODES = {
+    "decorated_definition",
+    "export_statement",
+}
+
+# Import-only nodes add noise to retrieval, so they are not indexed alone.
+IMPORT_NODES = {
+    "import_statement",
+    "import_from_statement",
+    "future_import_statement",
+    "import_declaration",
+    "use_declaration",
+}
+
 
 def split_large_text(text, max_chars=MAX_CHUNK_CHARS):
     chunks = []
@@ -54,6 +69,12 @@ def split_large_text(text, max_chars=MAX_CHUNK_CHARS):
         chunks.append("\n".join(current))
 
     return chunks
+
+
+def node_text(node, source):
+    return source[node.start_byte:node.end_byte].decode(
+        "utf-8", errors="replace"
+    ).strip()
 
 
 def get_node_name(node, source):
@@ -82,6 +103,17 @@ def get_node_name(node, source):
     return None
 
 
+def unwrap(node):
+    """Return the real definition inside a decorator/export wrapper."""
+    if node.type in WRAPPER_NODES:
+        for field in ("definition", "declaration"):
+            inner = node.child_by_field_name(field)
+            if inner is not None:
+                return inner
+
+    return node
+
+
 def get_symbol(node, source, index):
     node_type = node.type
 
@@ -94,6 +126,57 @@ def get_symbol(node, source, index):
         return name or f"class_{index}"
 
     return f"{node_type}_{index}"
+
+
+def collect_chunks(node, source, index, path, language):
+    if node.type in IMPORT_NODES:
+        return []
+
+    content = node_text(node, source)
+
+    if not content:
+        return []
+
+    target = unwrap(node)
+    symbol = get_symbol(target, source, index)
+
+    # A large class is split into one chunk per member (Class.method).
+    if target.type in CLASS_NODES and len(content) > MAX_CHUNK_CHARS:
+        body = target.child_by_field_name("body")
+
+        if body is not None and body.named_children:
+            members = []
+
+            for member_index, member in enumerate(
+                body.named_children, start=1
+            ):
+                for item in collect_chunks(
+                    member, source, member_index, path, language
+                ):
+                    item["symbol"] = f"{symbol}.{item['symbol']}"
+                    members.append(item)
+
+            if members:
+                return members
+
+    pieces = (
+        split_large_text(content)
+        if len(content) > MAX_CHUNK_CHARS
+        else [content]
+    )
+
+    return [
+        {
+            "file_path": str(path),
+            "language": language,
+            "symbol": (
+                symbol if len(pieces) == 1
+                else f"{symbol}_part_{piece_index}"
+            ),
+            "content": piece,
+        }
+        for piece_index, piece in enumerate(pieces, start=1)
+    ]
 
 
 def parse_source_file(file_path):
@@ -117,30 +200,9 @@ def parse_source_file(file_path):
         chunks = []
 
         for index, node in enumerate(root.named_children, start=1):
-            content = source[node.start_byte:node.end_byte].decode(
-                "utf-8", errors="replace"
-            ).strip()
-
-            if not content:
-                continue
-
-            symbol = get_symbol(node, source, index)
-
-            if len(content) > MAX_CHUNK_CHARS:
-                pieces = split_large_text(content)
-            else:
-                pieces = [content]
-
-            for piece_index, piece in enumerate(pieces, start=1):
-                chunks.append({
-                    "file_path": str(path),
-                    "language": language,
-                    "symbol": (
-                        symbol if len(pieces) == 1
-                        else f"{symbol}_part_{piece_index}"
-                    ),
-                    "content": piece,
-                })
+            chunks.extend(
+                collect_chunks(node, source, index, path, language)
+            )
 
         if not chunks and text.strip():
             chunks = [

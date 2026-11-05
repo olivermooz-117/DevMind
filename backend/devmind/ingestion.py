@@ -1,29 +1,41 @@
 from .parser import discover_source_files, parse_source_file
-from .ollama_client import create_embedding
+from .ollama_client import create_embeddings
 from .database import replace_repository_chunks
+from .config import EMBED_BATCH_SIZE
+
+
+def embedding_text(chunk):
+    """Give the embedding model the file and symbol, not just the code."""
+    return f"{chunk['file_path']} :: {chunk['symbol']}\n{chunk['content']}"
 
 
 def ingest_repository(repo_path):
     root, files = discover_source_files(repo_path)
-    all_chunks = []
+    chunks = []
 
     for file_path in files:
-        parsed_chunks = parse_source_file(file_path)
+        relative_path = str(file_path.relative_to(root))
 
-        for chunk in parsed_chunks:
-            try:
-                chunk["file_path"] = str(
-                    file_path.relative_to(root)
-                )
-                chunk["embedding"] = create_embedding(chunk["content"])
-                all_chunks.append(chunk)
-            except Exception as error:
-                print(f"Skipping chunk in {file_path}: {error}")
+        for chunk in parse_source_file(file_path):
+            chunk["file_path"] = relative_path
+            chunks.append(chunk)
 
-    replace_repository_chunks(str(root), all_chunks)
+    if not chunks:
+        raise ValueError("No supported source files were found in that repository")
+
+    # Embed everything first. If Ollama fails, the exception propagates and
+    # the existing index is left untouched.
+    for start in range(0, len(chunks), EMBED_BATCH_SIZE):
+        batch = chunks[start:start + EMBED_BATCH_SIZE]
+        vectors = create_embeddings([embedding_text(chunk) for chunk in batch])
+
+        for chunk, vector in zip(batch, vectors):
+            chunk["embedding"] = vector
+
+    replace_repository_chunks(str(root), chunks)
 
     return {
         "repository": str(root),
         "files_discovered": len(files),
-        "chunks_indexed": len(all_chunks),
+        "chunks_indexed": len(chunks),
     }

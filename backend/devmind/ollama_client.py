@@ -3,24 +3,34 @@ import requests
 from .config import OLLAMA_URL, CHAT_MODEL, EMBED_MODEL
 
 
-def create_embedding(text):
+def create_embeddings(texts):
+    """Embed several texts in a single Ollama request."""
+    if not texts:
+        return []
+
     response = requests.post(
         f"{OLLAMA_URL}/api/embed",
         json={
             "model": EMBED_MODEL,
-            "input": text
+            "input": texts
         },
         timeout=180
     )
     response.raise_for_status()
 
-    data = response.json()
-    embeddings = data.get("embeddings", [])
+    embeddings = response.json().get("embeddings", [])
 
-    if not embeddings:
-        raise RuntimeError("Ollama returned no embedding")
+    if len(embeddings) != len(texts):
+        raise RuntimeError(
+            f"Ollama returned {len(embeddings)} embeddings "
+            f"for {len(texts)} inputs"
+        )
 
-    return embeddings[0]
+    return embeddings
+
+
+def create_embedding(text):
+    return create_embeddings([text])[0]
 
 
 def generate_response(prompt):

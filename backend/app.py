@@ -9,9 +9,36 @@ from devmind.retrieval import search_code
 from devmind.assistant import answer_about_code
 from devmind.config import CHAT_MODEL, OLLAMA_URL
 from devmind.ollama_client import generate_response
+from devmind.security import resolve_repo_path
 
 app = Flask(__name__)
 initialize_database()
+
+OLLAMA_UNAVAILABLE = (
+    "Could not reach Ollama. Check that Ollama is running "
+    "and the required models are installed."
+)
+
+
+def optional_repo_path(data):
+    repo_path = data.get("repo_path")
+
+    if not repo_path:
+        return None
+
+    return str(resolve_repo_path(repo_path))
+
+
+def model_error_response(error):
+    app.logger.warning("Ollama request failed: %s", error)
+
+    if isinstance(error, requests.exceptions.Timeout):
+        return jsonify({"error": "The AI model took too long to respond"}), 504
+
+    if isinstance(error, requests.exceptions.ConnectionError):
+        return jsonify({"error": OLLAMA_UNAVAILABLE}), 503
+
+    return jsonify({"error": "The AI model returned an error"}), 502
 
 
 @app.get("/health")
@@ -32,64 +59,69 @@ def ingest():
         return jsonify({"error": "repo_path is required"}), 400
 
     try:
-        result = ingest_repository(repo_path.strip())
-        return jsonify(result)
+        resolved = resolve_repo_path(repo_path)
+        return jsonify(ingest_repository(str(resolved)))
     except ValueError as error:
         return jsonify({"error": str(error)}), 400
     except requests.exceptions.RequestException as error:
-        return jsonify({
-            "error": "Could not reach Ollama. Check that Ollama is running and the embedding model is installed.",
-            "details": str(error),
-        }), 503
-    except Exception as error:
+        return model_error_response(error)
+    except Exception:
         app.logger.exception("Repository ingestion failed")
-        return jsonify({"error": str(error)}), 500
+        return jsonify({"error": "Repository ingestion failed"}), 500
 
 
 @app.post("/search")
 def semantic_search():
     data = request.get_json(silent=True) or {}
     query = data.get("query", "")
-    repo_path = data.get("repo_path")
-    limit = data.get("limit", 5)
 
     if not isinstance(query, str) or not query.strip():
         return jsonify({"error": "A search query is required"}), 400
 
     try:
-        results = search_code(
-            query.strip(),
-            repo_path=repo_path,
-            limit=max(1, min(int(limit), 20))
-        )
+        limit = max(1, min(int(data.get("limit", 5)), 20))
+        repo_path = optional_repo_path(data)
+    except (TypeError, ValueError) as error:
+        return jsonify({"error": str(error)}), 400
+
+    try:
+        results = search_code(query.strip(), repo_path=repo_path, limit=limit)
         return jsonify({"results": results})
     except requests.exceptions.RequestException as error:
-        return jsonify({"error": str(error)}), 503
+        return model_error_response(error)
 
 
 @app.post("/explain")
 def explain():
     data = request.get_json(silent=True) or {}
     question = data.get("question", "")
-    repo_path = data.get("repo_path")
 
     if not isinstance(question, str) or not question.strip():
         return jsonify({"error": "A question is required"}), 400
 
     try:
+        repo_path = optional_repo_path(data)
+    except ValueError as error:
+        return jsonify({"error": str(error)}), 400
+
+    try:
         return jsonify(answer_about_code(question.strip(), repo_path))
     except requests.exceptions.RequestException as error:
-        return jsonify({"error": str(error)}), 503
+        return model_error_response(error)
 
 
 @app.post("/chat")
 def chat():
     data = request.get_json(silent=True) or {}
     prompt = data.get("prompt", "")
-    repo_path = data.get("repo_path")
 
     if not isinstance(prompt, str) or not prompt.strip():
         return jsonify({"error": "A valid prompt is required"}), 400
+
+    try:
+        repo_path = optional_repo_path(data)
+    except ValueError as error:
+        return jsonify({"error": str(error)}), 400
 
     try:
         if repo_path:
@@ -105,12 +137,8 @@ def chat():
             "model": CHAT_MODEL,
         })
 
-    except requests.exceptions.Timeout:
-        return jsonify({"error": "The AI model took too long to respond"}), 504
-    except requests.exceptions.ConnectionError:
-        return jsonify({"error": "Cannot connect to Ollama. Is the server running?"}), 503
     except requests.exceptions.RequestException as error:
-        return jsonify({"error": str(error)}), 502
+        return model_error_response(error)
 
 
 if __name__ == "__main__":

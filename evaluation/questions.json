@@ -1,18 +1,26 @@
 [
   {
     "question": "Where is the application health endpoint implemented?",
-    "expected_topic": "health endpoint"
+    "expected_files": ["backend/app.py"]
   },
   {
     "question": "How does the application connect to Ollama?",
-    "expected_topic": "Ollama client"
+    "expected_files": ["backend/devmind/ollama_client.py"]
   },
   {
     "question": "Where are repository code chunks stored?",
-    "expected_topic": "database"
+    "expected_files": ["backend/devmind/database.py"]
   },
   {
     "question": "How does semantic search rank code chunks?",
-    "expected_topic": "cosine similarity"
+    "expected_files": ["backend/devmind/retrieval.py"]
+  },
+  {
+    "question": "How are source files split into chunks?",
+    "expected_files": ["backend/devmind/parser.py"]
+  },
+  {
+    "question": "Where is the prompt that tells the model not to invent code?",
+    "expected_files": ["backend/devmind/assistant.py"]
   }
 ]

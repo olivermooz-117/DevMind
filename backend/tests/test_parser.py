@@ -63,3 +63,47 @@ def test_discover_source_files_ignores_directories(tmp_path):
     assert root == tmp_path.resolve()
     assert len(files) == 1
     assert files[0].name == "main.py"
+
+
+def test_decorated_functions_get_real_names(tmp_path):
+    source = tmp_path / "routes.py"
+    source.write_text(
+        "@app.get('/health')\n"
+        "def health():\n"
+        "    return 'ok'\n",
+        encoding="utf-8",
+    )
+
+    chunks = parse_source_file(source)
+
+    assert [chunk["symbol"] for chunk in chunks] == ["health"]
+    assert "@app.get" in chunks[0]["content"]
+
+
+def test_import_only_nodes_are_not_chunked(tmp_path):
+    source = tmp_path / "module.py"
+    source.write_text(
+        "import os\n"
+        "from pathlib import Path\n\n"
+        "def run():\n"
+        "    return os.getcwd()\n",
+        encoding="utf-8",
+    )
+
+    chunks = parse_source_file(source)
+
+    assert [chunk["symbol"] for chunk in chunks] == ["run"]
+
+
+def test_large_class_is_split_into_methods(tmp_path):
+    methods = "".join(
+        f"    def method_{n}(self):\n        return '{'x' * 700}'\n\n"
+        for n in range(8)
+    )
+    source = tmp_path / "big.py"
+    source.write_text("class Big:\n" + methods, encoding="utf-8")
+
+    symbols = [chunk["symbol"] for chunk in parse_source_file(source)]
+
+    assert "Big.method_0" in symbols
+    assert "Big.method_7" in symbols
