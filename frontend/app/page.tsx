@@ -16,7 +16,7 @@ type SearchResult = Source & {
 type Mode = "explain" | "search";
 
 export default function Home() {
-  const [repoPath, setRepoPath] = useState("/home/moosberger/DevMind");
+  const [repoPath, setRepoPath] = useState("");
   const [question, setQuestion] = useState("");
   const [answer, setAnswer] = useState("");
   const [sources, setSources] = useState<Source[]>([]);
