@@ -33,8 +33,17 @@ def main():
     total_reciprocal_rank = 0.0
 
     for item in questions:
-        results = search_code(item["question"], repo_path=repo_path, limit=TOP_K)
-        retrieved = [result["file_path"] for result in results]
+        results = search_code(item["question"], repo_path=repo_path, limit=50)
+
+        # One entry per file, and ignore the evaluation files themselves
+        # (questions.json contains the questions, so it would match itself).
+        retrieved = []
+        for result in results:
+            path = result["file_path"]
+            if path.startswith("evaluation/") or path in retrieved:
+                continue
+            retrieved.append(path)
+        retrieved = retrieved[:TOP_K]
         score = reciprocal_rank(retrieved, set(item["expected_files"]))
 
         hits += int(score > 0)
