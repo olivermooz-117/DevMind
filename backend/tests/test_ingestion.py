@@ -65,3 +65,19 @@ def test_empty_repository_is_rejected(isolated_db, tmp_path, monkeypatch):
 
     with pytest.raises(ValueError):
         ingestion.ingest_repository(str(empty))
+
+
+def test_ingestion_records_embedding_model_metadata(
+    isolated_db, sample_repo, monkeypatch
+):
+    monkeypatch.setattr(ingestion, "create_embeddings", fake_embeddings)
+
+    result = ingestion.ingest_repository(str(sample_repo))
+
+    metadata = database.get_repository_embedding_metadata(
+        result["repository"]
+    )
+
+    assert metadata is not None
+    assert metadata["embedding_model"] == ingestion.EMBED_MODEL
+    assert metadata["embedding_dimensions"] == 2

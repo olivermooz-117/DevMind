@@ -3,11 +3,18 @@ import os
 import requests
 from flask import Flask, jsonify, request
 
-from devmind.database import initialize_database
+from devmind.database import (
+    connect,
+    initialize_database,
+    get_repositories,
+)
 from devmind.ingestion import ingest_repository
-from devmind.retrieval import search_code
+from devmind.retrieval import (
+    search_code,
+    EmbeddingModelMismatchError,
+)
 from devmind.assistant import answer_about_code
-from devmind.config import CHAT_MODEL, OLLAMA_URL
+from devmind.config import CHAT_MODEL, EMBED_MODEL, OLLAMA_URL
 from devmind.ollama_client import generate_response
 from devmind.security import resolve_repo_path
 
@@ -33,21 +40,104 @@ def model_error_response(error):
     app.logger.warning("Ollama request failed: %s", error)
 
     if isinstance(error, requests.exceptions.Timeout):
-        return jsonify({"error": "The AI model took too long to respond"}), 504
+        return jsonify({
+            "error": "The AI model took too long to respond"
+        }), 504
 
     if isinstance(error, requests.exceptions.ConnectionError):
         return jsonify({"error": OLLAMA_UNAVAILABLE}), 503
 
-    return jsonify({"error": "The AI model returned an error"}), 502
+    return jsonify({
+        "error": "The AI model returned an error"
+    }), 502
+
+
+def embedding_index_error(error):
+    return jsonify({
+        "error": str(error),
+        "action": "Re-index the repository using the configured embedding model.",
+    }), 409
+
+
+@app.get("/repositories")
+def repositories():
+    """List repositories currently stored in the local index."""
+    try:
+        return jsonify({"repositories": get_repositories()})
+    except Exception:
+        app.logger.exception("Could not load indexed repositories")
+        return jsonify({
+            "error": "Could not load indexed repositories"
+        }), 500
 
 
 @app.get("/health")
 def health():
+    """Liveness check: confirms that the Flask process is responding."""
     return jsonify({
         "status": "healthy",
         "model": CHAT_MODEL,
-        "ollama_url": OLLAMA_URL,
+        "embedding_model": EMBED_MODEL,
     })
+
+
+@app.get("/ready")
+def readiness():
+    """Readiness check: verifies SQLite, Ollama, and required models."""
+    checks = {
+        "database": "unknown",
+        "ollama": "unknown",
+        "chat_model": "unknown",
+        "embedding_model": "unknown",
+    }
+
+    try:
+        with connect() as connection:
+            connection.execute("SELECT 1").fetchone()
+        checks["database"] = "ok"
+    except Exception:
+        app.logger.exception("Database readiness check failed")
+        checks["database"] = "unavailable"
+
+    try:
+        response = requests.get(
+            f"{OLLAMA_URL}/api/tags",
+            timeout=3,
+        )
+        response.raise_for_status()
+
+        available_models = {
+            model.get("name") or model.get("model")
+            for model in response.json().get("models", [])
+        }
+
+        checks["ollama"] = "ok"
+        checks["chat_model"] = (
+            "ok" if CHAT_MODEL in available_models else "missing"
+        )
+        checks["embedding_model"] = (
+            "ok" if EMBED_MODEL in available_models else "missing"
+        )
+
+    except requests.exceptions.RequestException:
+        checks["ollama"] = "unavailable"
+        checks["chat_model"] = "unavailable"
+        checks["embedding_model"] = "unavailable"
+    except (ValueError, TypeError):
+        checks["ollama"] = "invalid_response"
+        checks["chat_model"] = "unknown"
+        checks["embedding_model"] = "unknown"
+
+    ready = all(value == "ok" for value in checks.values())
+
+    return jsonify({
+        "status": "ready" if ready else "degraded",
+        "checks": checks,
+        "models": {
+            "chat": CHAT_MODEL,
+            "embedding": EMBED_MODEL,
+        },
+    }), 200 if ready else 503
 
 
 @app.post("/ingest")
@@ -67,7 +157,9 @@ def ingest():
         return model_error_response(error)
     except Exception:
         app.logger.exception("Repository ingestion failed")
-        return jsonify({"error": "Repository ingestion failed"}), 500
+        return jsonify({
+            "error": "Repository ingestion failed"
+        }), 500
 
 
 @app.post("/search")
@@ -85,8 +177,14 @@ def semantic_search():
         return jsonify({"error": str(error)}), 400
 
     try:
-        results = search_code(query.strip(), repo_path=repo_path, limit=limit)
+        results = search_code(
+            query.strip(),
+            repo_path=repo_path,
+            limit=limit,
+        )
         return jsonify({"results": results})
+    except EmbeddingModelMismatchError as error:
+        return embedding_index_error(error)
     except requests.exceptions.RequestException as error:
         return model_error_response(error)
 
@@ -106,6 +204,8 @@ def explain():
 
     try:
         return jsonify(answer_about_code(question.strip(), repo_path))
+    except EmbeddingModelMismatchError as error:
+        return embedding_index_error(error)
     except requests.exceptions.RequestException as error:
         return model_error_response(error)
 
@@ -137,6 +237,8 @@ def chat():
             "model": CHAT_MODEL,
         })
 
+    except EmbeddingModelMismatchError as error:
+        return embedding_index_error(error)
     except requests.exceptions.RequestException as error:
         return model_error_response(error)
 

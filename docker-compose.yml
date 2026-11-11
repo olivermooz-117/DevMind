@@ -5,7 +5,8 @@ services:
       - "127.0.0.1:5000:5000"
     environment:
       HOST: 0.0.0.0
-      OLLAMA_URL: http://host.docker.internal:11434
+      DEVMIND_ENV: ${DEVMIND_ENV:-development}
+      OLLAMA_URL: ${OLLAMA_URL:-http://host.docker.internal:11434}
       DEVMIND_DATA_DIR: /app/data
       DEVMIND_ALLOWED_ROOT: /repos
     volumes:
