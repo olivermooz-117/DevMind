@@ -1,25 +1,139 @@
 import os
+import time
+import uuid
 
 import requests
-from flask import Flask, jsonify, request
+from flask import Flask, jsonify, request, g
+from flask_limiter import Limiter
+from flask_limiter.util import get_remote_address
 
 from devmind.database import (
     connect,
     initialize_database,
     get_repositories,
+    create_conversation,
+    get_conversation,
+    list_conversations,
+    delete_conversation,
+    get_messages,
 )
 from devmind.ingestion import ingest_repository
 from devmind.retrieval import (
     search_code,
     EmbeddingModelMismatchError,
 )
-from devmind.assistant import answer_about_code
-from devmind.config import CHAT_MODEL, EMBED_MODEL, OLLAMA_URL
+from devmind.assistant import (
+    answer_about_code,
+    get_conversation_history,
+    list_all_conversations,
+    remove_conversation,
+)
+from devmind.config import CHAT_MODEL, EMBED_MODEL, OLLAMA_URL, MAX_SEARCH_RESULTS
 from devmind.ollama_client import generate_response
 from devmind.security import resolve_repo_path
 
 app = Flask(__name__)
+app.config["MAX_CONTENT_LENGTH"] = 4 * 1024 * 1024
 initialize_database()
+
+
+def _rate_limit(key):
+    return f"{key}/minute"
+
+
+INGEST_LIMIT = os.getenv("DEVMIND_RATE_LIMIT_INGEST", "30/minute")
+SEARCH_LIMIT = os.getenv("DEVMIND_RATE_LIMIT_SEARCH", "60/minute")
+EXPLAIN_LIMIT = os.getenv("DEVMIND_RATE_LIMIT_EXPLAIN", "60/minute")
+CHAT_LIMIT = os.getenv("DEVMIND_RATE_LIMIT_CHAT", "60/minute")
+CONVERSATION_LIMIT = os.getenv("DEVMIND_RATE_LIMIT_CONVERSATION", "120/minute")
+
+
+limiter = Limiter(
+    key_func=get_remote_address,
+    storage_uri="memory://",
+    default_limits=["200/minute"],
+    headers_enabled=True,
+)
+
+
+@limiter.request_filter
+def exempt_health_and_ready():
+    return request.path in {"/health", "/ready"}
+
+
+@app.errorhandler(429)
+def rate_limit_exceeded(error):
+    app.logger.warning(
+        "Rate limit exceeded",
+        extra={
+            "request_id": getattr(g, "request_id", None),
+            "path": request.path,
+            "method": request.method,
+        },
+    )
+    return jsonify({
+        "error": "Too many requests. Please slow down and try again later.",
+    }), 429
+
+
+_ALLOWED_ORIGINS = {
+    "http://127.0.0.1:3000",
+    "http://localhost:3000",
+}
+
+
+@app.before_request
+def assign_request_id():
+    g.request_id = str(uuid.uuid4())
+    g.start_time = time.time()
+
+    app.logger.info(
+        "Request started",
+        extra={
+            "request_id": g.request_id,
+            "method": request.method,
+            "path": request.path,
+        },
+    )
+
+
+@app.after_request
+def log_request(response):
+    duration = (time.time() - getattr(g, "start_time", 0)) * 1000
+    app.logger.info(
+        "Request completed",
+        extra={
+            "request_id": getattr(g, "request_id", None),
+            "method": request.method,
+            "path": request.path,
+            "status": response.status_code,
+            "duration_ms": round(duration, 2),
+        },
+    )
+    return response
+
+
+@app.before_request
+def handle_cors_preflight():
+    if request.method == "OPTIONS":
+        origin = request.headers.get("Origin", "")
+        if origin in _ALLOWED_ORIGINS:
+            response = jsonify({})
+            response.headers["Access-Control-Allow-Origin"] = origin
+            response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+            response.headers["Access-Control-Allow-Headers"] = "Content-Type"
+            return response, 200
+        return jsonify({"error": "CORS origin not allowed"}), 403
+
+
+@app.after_request
+def add_cors_headers(response):
+    origin = request.headers.get("Origin", "")
+    if origin in _ALLOWED_ORIGINS:
+        response.headers["Access-Control-Allow-Origin"] = origin
+        response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+        response.headers["Access-Control-Allow-Headers"] = "Content-Type"
+    return response
 
 OLLAMA_UNAVAILABLE = (
     "Could not reach Ollama. Check that Ollama is running "
@@ -54,7 +168,7 @@ def model_error_response(error):
 
 def embedding_index_error(error):
     return jsonify({
-        "error": str(error),
+        "error": "Repository index is incompatible with the configured embedding model.",
         "action": "Re-index the repository using the configured embedding model.",
     }), 409
 
@@ -141,6 +255,7 @@ def readiness():
 
 
 @app.post("/ingest")
+@limiter.limit(INGEST_LIMIT)
 def ingest():
     data = request.get_json(silent=True) or {}
     repo_path = data.get("repo_path")
@@ -163,6 +278,7 @@ def ingest():
 
 
 @app.post("/search")
+@limiter.limit(SEARCH_LIMIT)
 def semantic_search():
     data = request.get_json(silent=True) or {}
     query = data.get("query", "")
@@ -171,7 +287,7 @@ def semantic_search():
         return jsonify({"error": "A search query is required"}), 400
 
     try:
-        limit = max(1, min(int(data.get("limit", 5)), 20))
+        limit = max(1, min(int(data.get("limit", MAX_SEARCH_RESULTS)), MAX_SEARCH_RESULTS))
         repo_path = optional_repo_path(data)
     except (TypeError, ValueError) as error:
         return jsonify({"error": str(error)}), 400
@@ -190,6 +306,7 @@ def semantic_search():
 
 
 @app.post("/explain")
+@limiter.limit(EXPLAIN_LIMIT)
 def explain():
     data = request.get_json(silent=True) or {}
     question = data.get("question", "")
@@ -211,29 +328,43 @@ def explain():
 
 
 @app.post("/chat")
+@limiter.limit(CHAT_LIMIT)
 def chat():
     data = request.get_json(silent=True) or {}
     prompt = data.get("prompt", "")
+    conversation_id = data.get("conversation_id")
+    repo_path = None
 
     if not isinstance(prompt, str) or not prompt.strip():
         return jsonify({"error": "A valid prompt is required"}), 400
 
-    try:
-        repo_path = optional_repo_path(data)
-    except ValueError as error:
-        return jsonify({"error": str(error)}), 400
+    raw_repo_path = data.get("repo_path")
+    if raw_repo_path:
+        try:
+            repo_path = str(resolve_repo_path(raw_repo_path))
+        except ValueError as error:
+            return jsonify({"error": str(error)}), 400
 
     try:
         if repo_path:
-            result = answer_about_code(prompt.strip(), repo_path)
+            result = answer_about_code(
+                prompt.strip(),
+                repo_path=repo_path,
+                conversation_id=conversation_id,
+            )
+
             return jsonify({
                 "response": result["answer"],
                 "sources": result["sources"],
+                "conversation_id": result["conversation_id"],
+                "citation_keys": result.get("citation_keys", []),
                 "model": CHAT_MODEL,
             })
 
+        # General chat without repository context
+        response_text = generate_response(prompt.strip())
         return jsonify({
-            "response": generate_response(prompt.strip()),
+            "response": response_text,
             "model": CHAT_MODEL,
         })
 
@@ -241,6 +372,83 @@ def chat():
         return embedding_index_error(error)
     except requests.exceptions.RequestException as error:
         return model_error_response(error)
+
+
+@app.get("/conversations")
+@limiter.limit(CONVERSATION_LIMIT)
+def conversations_list():
+    """List all conversations, most recently updated first."""
+    try:
+        return jsonify({"conversations": list_all_conversations()})
+    except Exception:
+        app.logger.exception("Could not load conversations")
+        return jsonify({
+            "error": "Could not load conversations"
+        }), 500
+
+
+@app.post("/conversations")
+@limiter.limit(CONVERSATION_LIMIT)
+def conversations_create():
+    """Create a new conversation, optionally associated with a repository."""
+    data = request.get_json(silent=True) or {}
+    repo_path = data.get("repo_path")
+
+    if repo_path is not None:
+        try:
+            repo_path = str(resolve_repo_path(repo_path))
+        except ValueError as error:
+            return jsonify({"error": str(error)}), 400
+
+    try:
+        conversation_id = create_conversation(repo_path=repo_path)
+        conversation = get_conversation(conversation_id)
+        return jsonify({
+            "conversation_id": conversation_id,
+            "conversation": conversation,
+        }), 201
+    except Exception:
+        app.logger.exception("Could not create conversation")
+        return jsonify({
+            "error": "Could not create conversation"
+        }), 500
+
+
+@app.get("/conversations/<conversation_id>")
+@limiter.limit(CONVERSATION_LIMIT)
+def conversations_get(conversation_id):
+    """Get a conversation with all its messages."""
+    try:
+        history = get_conversation_history(conversation_id)
+        if history is None:
+            return jsonify({
+                "error": "Conversation not found"
+            }), 404
+        return jsonify(history)
+    except Exception:
+        app.logger.exception("Could not load conversation")
+        return jsonify({
+            "error": "Could not load conversation"
+        }), 500
+
+
+@app.delete("/conversations/<conversation_id>")
+@limiter.limit(CONVERSATION_LIMIT)
+def conversations_delete(conversation_id):
+    """Delete a conversation and all its messages."""
+    try:
+        conversation = get_conversation(conversation_id)
+        if conversation is None:
+            return jsonify({
+                "error": "Conversation not found"
+            }), 404
+        remove_conversation(conversation_id)
+        return jsonify({"status": "deleted"})
+    except Exception:
+        app.logger.exception("Could not delete conversation")
+        return jsonify({
+            "error": "Could not delete conversation"
+        }), 500
 
 
 if __name__ == "__main__":
