@@ -1,5 +1,7 @@
+import requests
+
 from .retrieval import search_code
-from .ollama_client import generate_response
+from .ollama_client import generate_response, stream_generate_response
 from .database import (
     add_message,
     create_conversation,
@@ -7,6 +9,8 @@ from .database import (
     get_conversation,
     get_messages,
     list_conversations,
+    export_conversation,
+    import_conversation,
 )
 
 
@@ -157,7 +161,7 @@ def answer_about_code(question, repo_path=None, conversation_id=None):
     conversation_context = _build_conversation_context(previous_messages)
 
     # Perform retrieval
-    matches = search_code(question, repo_path=repo_path, limit=5)
+    matches = search_code(question, repo_paths=repo_path, limit=5)
 
     if not matches:
         answer_text = (
@@ -206,6 +210,94 @@ def answer_about_code(question, repo_path=None, conversation_id=None):
         "conversation_id": conversation_id,
         "citation_keys": citation_keys,
     }
+
+
+def stream_answer_about_code(question, repo_path=None, conversation_id=None):
+    """Stream an answer about repository code with conversation tracking.
+
+    Yields (text_chunk, done, sources, conversation_id, citation_keys) tuples.
+    When done is True, the stream is complete and all chunks can be concatenated
+    to form the full response.
+
+    The final yielded chunk (done=True) includes sources, conversation_id, and
+    citation_keys so the frontend can persist the complete message.
+    """
+    # Create or load conversation
+    if conversation_id:
+        conversation = get_conversation(conversation_id)
+        if conversation is None:
+            conversation_id = create_conversation(repo_path=repo_path)
+            conversation = get_conversation(conversation_id)
+    else:
+        conversation_id = create_conversation(repo_path=repo_path)
+        conversation = get_conversation(conversation_id)
+
+    # Get conversation history for context
+    previous_messages = get_messages(conversation_id)
+    conversation_context = _build_conversation_context(previous_messages)
+
+    # Perform retrieval
+    matches = search_code(question, repo_paths=repo_path, limit=5)
+
+    sources = []
+    citation_keys = []
+
+    if not matches:
+        answer_text = (
+            "I could not find indexed code relevant to that question. "
+            "Please index a repository first, or try rephrasing your "
+            "question."
+        )
+        # Persist the conversation turn
+        add_message(conversation_id, "user", question)
+        add_message(conversation_id, "assistant", answer_text, sources=[])
+
+        yield answer_text, True, [], conversation_id, []
+        return
+
+    context = _build_repository_context(matches)
+
+    prompt = SYSTEM_INSTRUCTIONS.format(
+        conversation_history=conversation_context,
+        repository_context=context,
+        question=question,
+    )
+
+    sources = [
+        {
+            "file_path": item["file_path"],
+            "symbol": item["symbol"],
+            "start_line": item.get("start_line"),
+            "end_line": item.get("end_line"),
+            "score": item["score"],
+        }
+        for item in matches
+    ]
+
+    citation_keys = [
+        f"[FILE:{item['file_path']}:{item.get('start_line')}]"
+        for item in matches
+        if item.get("start_line")
+    ]
+
+    full_response = ""
+
+    try:
+        for chunk, done in stream_generate_response(prompt):
+            full_response += chunk
+            yield chunk, done, sources, conversation_id, citation_keys
+    except requests.exceptions.RequestException:
+        # On stream failure, yield what we have so far as an error indicator
+        error_msg = (
+            "\n\n[Stream interrupted. The AI model became unavailable "
+            "during response generation.]"
+        )
+        full_response += error_msg
+        yield error_msg, True, sources, conversation_id, citation_keys
+
+    # Persist the complete conversation turn
+    add_message(conversation_id, "user", question)
+    add_message(conversation_id, "assistant", full_response, sources=sources)
 
 
 def get_conversation_history(conversation_id):

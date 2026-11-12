@@ -1,5 +1,6 @@
 import json
 import logging
+import re
 import sqlite3
 import time
 
@@ -401,3 +402,235 @@ def get_messages(conversation_id, limit=None):
         results.append(item)
 
     return results
+
+
+# --- Conversation export/import ---
+
+import re as _re
+from datetime import datetime as _datetime
+from uuid import uuid4 as _uuid4
+
+MAX_IMPORT_BYTES = 10 * 1024 * 1024  # 10 MB max import file
+MAX_IMPORT_MESSAGES = 1000  # Max messages per import
+
+_INVALID_ID_PATTERN = _re.compile(
+    r"^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$"
+)
+
+
+def _validate_uuid(value):
+    """Return True if value looks like a valid UUID v4."""
+    return isinstance(value, str) and bool(_INVALID_ID_PATTERN.match(value.lower()))
+
+
+def _validate_import_data(data):
+    """Validate an imported conversation data structure.
+
+    Returns (conversation_dict, messages_list) or raises ValueError.
+    """
+    if not isinstance(data, dict):
+        raise ValueError("Import file must contain a JSON object")
+
+    conversation = data.get("conversation")
+    if not isinstance(conversation, dict):
+        raise ValueError("Import data missing 'conversation' object")
+
+    conv_id = conversation.get("id")
+    if not _validate_uuid(conv_id):
+        raise ValueError("Invalid conversation ID in import data")
+
+    title = conversation.get("title")
+    if not isinstance(title, str) or not title.strip():
+        raise ValueError("Invalid conversation title in import data")
+
+    repo_path = conversation.get("repo_path")
+    if repo_path is not None and not isinstance(repo_path, str):
+        raise ValueError("Invalid repo_path in import data")
+
+    created_at = conversation.get("created_at")
+    updated_at = conversation.get("updated_at")
+    if not isinstance(created_at, str) or not isinstance(updated_at, str):
+        raise ValueError("Invalid timestamps in import data")
+
+    messages = data.get("messages")
+    if not isinstance(messages, list):
+        raise ValueError("Import data missing 'messages' array")
+
+    if len(messages) > MAX_IMPORT_MESSAGES:
+        raise ValueError(
+            f"Import exceeds maximum of {MAX_IMPORT_MESSAGES} messages"
+        )
+
+    validated_messages = []
+    for index, msg in enumerate(messages):
+        if not isinstance(msg, dict):
+            raise ValueError(f"Message {index} is not an object")
+
+        role = msg.get("role")
+        if role not in ("user", "assistant"):
+            raise ValueError(f"Message {index} has invalid role: {role}")
+
+        content = msg.get("content")
+        if not isinstance(content, str) or not content.strip():
+            raise ValueError(f"Message {index} has invalid content")
+
+        created_at_msg = msg.get("created_at")
+        if not isinstance(created_at_msg, str):
+            raise ValueError(f"Message {index} has invalid created_at")
+
+        sources = msg.get("sources")
+        if sources is not None:
+            if not isinstance(sources, list):
+                raise ValueError(f"Message {index} has invalid sources")
+            for src_index, src in enumerate(sources):
+                if not isinstance(src, dict):
+                    raise ValueError(
+                        f"Message {index} source {src_index} is not an object"
+                    )
+                if "file_path" not in src or not isinstance(src["file_path"], str):
+                    raise ValueError(
+                        f"Message {index} source {src_index} missing file_path"
+                    )
+
+        validated_messages.append({
+            "role": role,
+            "content": content,
+            "sources": sources,
+            "created_at": created_at_msg,
+        })
+
+    return conversation, validated_messages
+
+
+def export_conversation(conversation_id, format="json"):
+    """Export a conversation as JSON or Markdown.
+
+    Returns (content_string, content_type, filename) or raises ValueError
+    if the conversation is not found.
+    """
+    conversation = get_conversation(conversation_id)
+    if conversation is None:
+        raise ValueError("Conversation not found")
+
+    messages = get_messages(conversation_id)
+
+    if format == "markdown":
+        lines = [
+            f"# {conversation['title']}",
+            "",
+            f"**Conversation ID:** {conversation['id']}",
+            f"**Created:** {conversation['created_at']}",
+            f"**Updated:** {conversation['updated_at']}",
+        ]
+        if conversation.get("repo_path"):
+            lines.append(f"**Repository:** {conversation['repo_path']}")
+        lines.append("")
+        lines.append("---")
+        lines.append("")
+
+        for msg in messages:
+            role_label = "You" if msg["role"] == "user" else "DevMind"
+            lines.append(f"## {role_label}")
+            lines.append("")
+            lines.append(msg["content"])
+            lines.append("")
+            if msg.get("sources"):
+                lines.append("*Sources:*")
+                for src in msg["sources"]:
+                    location = src.get("file_path", "unknown")
+                    if src.get("start_line") is not None:
+                        location += f":{src['start_line']}"
+                    lines.append(f"- {location}")
+                lines.append("")
+            lines.append("---")
+            lines.append("")
+
+        return "\n".join(lines), "text/markdown", f"conversation-{conversation_id}.md"
+
+    # Default: JSON export
+    export_data = {
+        "conversation": {
+            "id": conversation["id"],
+            "repo_path": conversation.get("repo_path"),
+            "title": conversation["title"],
+            "created_at": conversation["created_at"],
+            "updated_at": conversation["updated_at"],
+        },
+        "messages": [
+            {
+                "role": msg["role"],
+                "content": msg["content"],
+                "sources": msg.get("sources"),
+                "created_at": msg["created_at"],
+            }
+            for msg in messages
+        ],
+    }
+
+    return (
+        json.dumps(export_data, indent=2),
+        "application/json",
+        f"conversation-{conversation_id}.json",
+    )
+
+
+def import_conversation(data, repo_path=None):
+    """Import a conversation from validated data.
+
+    Returns the new conversation ID. Raises ValueError if data is invalid
+    or the conversation ID already exists.
+    """
+    conversation, messages = _validate_import_data(data)
+
+    new_id = str(_uuid4())
+
+    from datetime import datetime, timezone
+    now = datetime.now(timezone.utc).isoformat()
+
+    # Use the repo_path from the import data if no override provided
+    effective_repo_path = repo_path or conversation.get("repo_path")
+
+    # Validate repo_path against allowed root if provided
+    if effective_repo_path:
+        from .security import resolve_repo_path
+        try:
+            effective_repo_path = str(resolve_repo_path(effective_repo_path))
+        except ValueError:
+            effective_repo_path = None
+
+    with connect() as connection:
+        _execute_with_retry(
+            connection,
+            """
+            INSERT INTO conversations
+                (id, repo_path, title, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (
+                new_id,
+                effective_repo_path,
+                conversation["title"],
+                now,
+                now,
+            ),
+        )
+
+        for msg in messages:
+            sources_json = json.dumps(msg["sources"]) if msg.get("sources") else None
+            _execute_with_retry(
+                connection,
+                """
+                INSERT INTO messages
+                    (conversation_id, role, content, sources, created_at)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    new_id,
+                    msg["role"],
+                    msg["content"],
+                    sources_json,
+                    msg["created_at"],
+                ),
+            )
+
+    return new_id

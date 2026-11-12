@@ -47,26 +47,53 @@ def _normalize_scores(scores):
     return [(s - min_s) / (max_s - min_s) for s in scores]
 
 
-def search_code(query, repo_path=None, limit=None, use_hybrid=True):
+def search_code(query, repo_paths=None, limit=None, use_hybrid=True,
+                repo_path=None):
     """Search indexed code chunks using semantic similarity with optional
     hybrid keyword boosting.
+
+    Args:
+        query: The search query string.
+        repo_paths: Optional list of repository paths to search, or a single
+            path string. If None, searches all indexed repositories.
+        repo_path: Backward-compatible alias for repo_paths (single string).
+        limit: Maximum number of results to return.
+        use_hybrid: Whether to combine semantic + keyword scoring.
 
     Results are deduplicated by (file_path, symbol) and diversified so no
     single file dominates. Each result includes start_line and end_line
     for citation purposes.
     """
+    # Backward compatibility: accept repo_path as alias for repo_paths
+    if repo_path is not None:
+        if repo_paths is not None:
+            raise ValueError("Cannot specify both repo_path and repo_paths")
+        repo_paths = repo_path
+
     if limit is None:
         limit = MAX_SEARCH_RESULTS
-    chunks = get_repository_chunks(repo_path)
+
+    # Normalize repo_paths to a set
+    if repo_paths is None:
+        repo_path_set = None  # Search all
+    elif isinstance(repo_paths, str):
+        repo_path_set = {repo_paths}
+    else:
+        repo_path_set = set(repo_paths)
+
+    chunks = get_repository_chunks(None)  # Get all chunks, filter below
 
     if not chunks:
         return []
 
+    # Filter chunks by repo_path if specified
+    if repo_path_set is not None:
+        chunks = [c for c in chunks if c["repo_path"] in repo_path_set]
+        if not chunks:
+            return []
+
     # A repository must have metadata from a successful, current ingestion.
     repository_paths = {chunk["repo_path"] for chunk in chunks}
-
-    if repo_path:
-        repository_paths = {repo_path}
 
     for path in repository_paths:
         metadata = get_repository_embedding_metadata(path)
@@ -163,6 +190,7 @@ def search_code(query, repo_path=None, limit=None, use_hybrid=True):
             "content": chunk["content"],
             "start_line": chunk.get("start_line"),
             "end_line": chunk.get("end_line"),
+            "repo_path": chunk["repo_path"],
             "score": round(float(combined_scores[int(i)]), 4),
         })
 

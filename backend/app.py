@@ -16,6 +16,8 @@ from devmind.database import (
     list_conversations,
     delete_conversation,
     get_messages,
+    export_conversation,
+    import_conversation,
 )
 from devmind.ingestion import ingest_repository
 from devmind.retrieval import (
@@ -24,12 +26,13 @@ from devmind.retrieval import (
 )
 from devmind.assistant import (
     answer_about_code,
+    stream_answer_about_code,
     get_conversation_history,
     list_all_conversations,
     remove_conversation,
 )
 from devmind.config import CHAT_MODEL, EMBED_MODEL, OLLAMA_URL, MAX_SEARCH_RESULTS
-from devmind.ollama_client import generate_response
+from devmind.ollama_client import generate_response, stream_generate_response
 from devmind.security import resolve_repo_path
 
 app = Flask(__name__)
@@ -46,6 +49,7 @@ SEARCH_LIMIT = os.getenv("DEVMIND_RATE_LIMIT_SEARCH", "60/minute")
 EXPLAIN_LIMIT = os.getenv("DEVMIND_RATE_LIMIT_EXPLAIN", "60/minute")
 CHAT_LIMIT = os.getenv("DEVMIND_RATE_LIMIT_CHAT", "60/minute")
 CONVERSATION_LIMIT = os.getenv("DEVMIND_RATE_LIMIT_CONVERSATION", "120/minute")
+STREAM_LIMIT = os.getenv("DEVMIND_RATE_LIMIT_STREAM", "60/minute")
 
 
 limiter = Limiter(
@@ -139,15 +143,6 @@ OLLAMA_UNAVAILABLE = (
     "Could not reach Ollama. Check that Ollama is running "
     "and the required models are installed."
 )
-
-
-def optional_repo_path(data):
-    repo_path = data.get("repo_path")
-
-    if not repo_path:
-        return None
-
-    return str(resolve_repo_path(repo_path))
 
 
 def model_error_response(error):
@@ -259,13 +254,36 @@ def readiness():
 def ingest():
     data = request.get_json(silent=True) or {}
     repo_path = data.get("repo_path")
+    repo_paths = data.get("repo_paths")
 
-    if not isinstance(repo_path, str) or not repo_path.strip():
-        return jsonify({"error": "repo_path is required"}), 400
+    # Resolve repository paths against the allowed root
+    resolved_paths = []
+
+    # Handle single repo_path (backward compatible)
+    if repo_path is not None:
+        if not isinstance(repo_path, str):
+            return jsonify({"error": "repo_path must be a string"}), 400
+        try:
+            resolved_paths.append(str(resolve_repo_path(repo_path)))
+        except ValueError as error:
+            return jsonify({"error": str(error)}), 400
+
+    # Handle multiple repo_paths
+    if repo_paths is not None:
+        if not isinstance(repo_paths, list):
+            return jsonify({"error": "repo_paths must be a list"}), 400
+        for rp in repo_paths:
+            try:
+                resolved_paths.append(str(resolve_repo_path(rp)))
+            except ValueError:
+                continue
+
+    if not resolved_paths:
+        return jsonify({"error": "At least one valid repo_path is required"}), 400
 
     try:
-        resolved = resolve_repo_path(repo_path)
-        return jsonify(ingest_repository(str(resolved)))
+        # Index the first repository; additional repos can be indexed separately
+        return jsonify(ingest_repository(str(resolved_paths[0])))
     except ValueError as error:
         return jsonify({"error": str(error)}), 400
     except requests.exceptions.RequestException as error:
@@ -288,14 +306,38 @@ def semantic_search():
 
     try:
         limit = max(1, min(int(data.get("limit", MAX_SEARCH_RESULTS)), MAX_SEARCH_RESULTS))
-        repo_path = optional_repo_path(data)
+        repo_path = data.get("repo_path")
+        repo_paths = data.get("repo_paths")
     except (TypeError, ValueError) as error:
         return jsonify({"error": str(error)}), 400
+
+    # Resolve repository paths against the allowed root
+    resolved_paths = []
+
+    # Handle single repo_path (backward compatible)
+    if repo_path is not None:
+        if not isinstance(repo_path, str):
+            return jsonify({"error": "repo_path must be a string"}), 400
+        try:
+            resolved_paths.append(str(resolve_repo_path(repo_path)))
+        except ValueError as error:
+            return jsonify({"error": str(error)}), 400
+
+    # Handle multiple repo_paths
+    if repo_paths is not None:
+        if not isinstance(repo_paths, list):
+            return jsonify({"error": "repo_paths must be a list"}), 400
+        for rp in repo_paths:
+            try:
+                resolved_paths.append(str(resolve_repo_path(rp)))
+            except ValueError:
+                # Skip invalid paths silently
+                continue
 
     try:
         results = search_code(
             query.strip(),
-            repo_path=repo_path,
+            repo_paths=resolved_paths if resolved_paths else None,
             limit=limit,
         )
         return jsonify({"results": results})
@@ -314,10 +356,13 @@ def explain():
     if not isinstance(question, str) or not question.strip():
         return jsonify({"error": "A question is required"}), 400
 
-    try:
-        repo_path = optional_repo_path(data)
-    except ValueError as error:
-        return jsonify({"error": str(error)}), 400
+    raw_repo_path = data.get("repo_path")
+    repo_path = None
+    if raw_repo_path:
+        try:
+            repo_path = str(resolve_repo_path(raw_repo_path))
+        except ValueError as error:
+            return jsonify({"error": str(error)}), 400
 
     try:
         return jsonify(answer_about_code(question.strip(), repo_path))
@@ -374,7 +419,153 @@ def chat():
         return model_error_response(error)
 
 
+@app.post("/chat/stream")
+@limiter.limit(STREAM_LIMIT)
+def chat_stream():
+    """Stream an AI response using Server-Sent Events.
+
+    Request body: same as /chat (prompt, repo_path, conversation_id).
+    Response: text/event-stream with data lines containing JSON chunks.
+    Each chunk: {"text": "...", "done": bool, "sources": [...], "conversation_id": "...", "citation_keys": [...]}
+    """
+    data = request.get_json(silent=True) or {}
+    prompt = data.get("prompt", "")
+    conversation_id = data.get("conversation_id")
+    repo_path = None
+
+    if not isinstance(prompt, str) or not prompt.strip():
+        return jsonify({"error": "A valid prompt is required"}), 400
+
+    raw_repo_path = data.get("repo_path")
+    if raw_repo_path:
+        try:
+            repo_path = str(resolve_repo_path(raw_repo_path))
+        except ValueError as error:
+            return jsonify({"error": str(error)}), 400
+
+    def generate():
+        """Generator that yields SSE-formatted chunks."""
+        try:
+            for chunk, done, sources, cid, citation_keys in stream_answer_about_code(
+                prompt.strip(),
+                repo_path=repo_path,
+                conversation_id=conversation_id,
+            ):
+                import json as _json
+                payload = _json.dumps({
+                    "text": chunk,
+                    "done": done,
+                    "sources": sources,
+                    "conversation_id": cid,
+                    "citation_keys": citation_keys,
+                })
+                yield f"data: {payload}\n\n"
+        except requests.exceptions.RequestException:
+            import json as _json
+            payload = _json.dumps({
+                "text": "\n\n[Stream interrupted. The AI model became unavailable during response generation.]",
+                "done": True,
+                "sources": [],
+                "conversation_id": conversation_id or "",
+                "citation_keys": [],
+            })
+            yield f"data: {payload}\n\n"
+        except Exception:
+            app.logger.exception("Streaming chat failed")
+            import json as _json
+            payload = _json.dumps({
+                "text": "\n\n[Stream failed. Please try again.]",
+                "done": True,
+                "sources": [],
+                "conversation_id": conversation_id or "",
+                "citation_keys": [],
+            })
+            yield f"data: {payload}\n\n"
+
+    return app.response_class(
+        generate(),
+        mimetype="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
 @app.get("/conversations")
+@limiter.limit(CONVERSATION_LIMIT)
+def conversations_list():
+    """List all conversations, most recently updated first."""
+    try:
+        return jsonify({"conversations": list_all_conversations()})
+    except Exception:
+        app.logger.exception("Could not load conversations")
+        return jsonify({
+            "error": "Could not load conversations"
+        }), 500
+
+
+@app.get("/conversations/<conversation_id>/export")
+@limiter.limit(CONVERSATION_LIMIT)
+def conversations_export(conversation_id):
+    """Export a conversation as JSON or Markdown.
+
+    Query param: format=json|markdown (default: json)
+    """
+    format_param = request.args.get("format", "json").lower()
+    if format_param not in ("json", "markdown"):
+        format_param = "json"
+
+    try:
+        content, content_type, filename = export_conversation(conversation_id, format_param)
+        return app.response_class(
+            content,
+            mimetype=content_type,
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
+    except ValueError as error:
+        return jsonify({"error": str(error)}), 404
+    except Exception:
+        app.logger.exception("Could not export conversation")
+        return jsonify({
+            "error": "Could not export conversation"
+        }), 500
+
+
+@app.post("/conversations/import")
+@limiter.limit(CONVERSATION_LIMIT)
+def conversations_import():
+    """Import a conversation from a JSON file.
+
+    Request body: JSON object with {conversation, messages} structure.
+    Optional query param: repo_path to associate with a specific repository.
+    """
+    data = request.get_json(silent=True)
+    if data is None:
+        return jsonify({"error": "Invalid JSON body"}), 400
+
+    raw_repo_path = request.args.get("repo_path")
+    effective_repo_path = None
+    if raw_repo_path:
+        try:
+            effective_repo_path = str(resolve_repo_path(raw_repo_path))
+        except ValueError as error:
+            return jsonify({"error": str(error)}), 400
+
+    try:
+        new_id = import_conversation(data, repo_path=effective_repo_path)
+        conversation = get_conversation(new_id)
+        return jsonify({
+            "conversation_id": new_id,
+            "conversation": conversation,
+        }), 201
+    except ValueError as error:
+        return jsonify({"error": str(error)}), 400
+    except Exception:
+        app.logger.exception("Could not import conversation")
+        return jsonify({
+            "error": "Could not import conversation"
+        }), 500
 @limiter.limit(CONVERSATION_LIMIT)
 def conversations_list():
     """List all conversations, most recently updated first."""
