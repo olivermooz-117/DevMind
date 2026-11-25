@@ -45,3 +45,44 @@ def generate_response(prompt):
     )
     response.raise_for_status()
     return response.json().get("response", "")
+
+
+def stream_generate_response(prompt):
+    """Stream generated text from Ollama, yielding chunks as they arrive.
+
+    Yields (text_chunk, done) tuples. When done is True, the stream is complete
+    and the full response is available by concatenating all yielded chunks.
+    """
+    try:
+        response = requests.post(
+            f"{OLLAMA_URL}/api/generate",
+            json={
+                "model": CHAT_MODEL,
+                "prompt": prompt,
+                "stream": True
+            },
+            timeout=240,
+            stream=True,
+        )
+        response.raise_for_status()
+
+        for line in response.iter_lines():
+            if not line:
+                continue
+            try:
+                data = line.decode("utf-8", errors="replace")
+                if data.startswith("data: "):
+                    data = data[6:]
+                import json as _json
+                parsed = _json.loads(data)
+                chunk = parsed.get("response", "")
+                done = parsed.get("done", False)
+                yield chunk, done
+                if done:
+                    return
+            except (ValueError, json.JSONDecodeError):
+                # Skip malformed lines in the stream
+                continue
+
+    except requests.exceptions.RequestException as error:
+        raise error

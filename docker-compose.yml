@@ -5,7 +5,8 @@ services:
       - "127.0.0.1:5000:5000"
     environment:
       HOST: 0.0.0.0
-      OLLAMA_URL: http://host.docker.internal:11434
+      DEVMIND_ENV: ${DEVMIND_ENV:-development}
+      OLLAMA_URL: ${OLLAMA_URL:-http://host.docker.internal:11434}
       DEVMIND_DATA_DIR: /app/data
       DEVMIND_ALLOWED_ROOT: /repos
     volumes:
@@ -13,6 +14,12 @@ services:
       - ${DEVMIND_PROJECTS_DIR:-./projects}:/repos:ro
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:5000/health', timeout=3)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
 
   frontend:
     build:
@@ -22,7 +29,14 @@ services:
     ports:
       - "127.0.0.1:3000:3000"
     depends_on:
-      - backend
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1:3000/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
 
 volumes:
   devmind-data:

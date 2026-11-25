@@ -1,26 +1,113 @@
 [
   {
     "question": "Where is the application health endpoint implemented?",
-    "expected_files": ["backend/app.py"]
+    "expected_files": [
+      "backend/app.py"
+    ]
   },
   {
     "question": "How does the application connect to Ollama?",
-    "expected_files": ["backend/devmind/ollama_client.py"]
+    "expected_files": [
+      "backend/devmind/ollama_client.py"
+    ]
   },
   {
     "question": "Where are repository code chunks stored?",
-    "expected_files": ["backend/devmind/database.py"]
+    "expected_files": [
+      "backend/devmind/database.py"
+    ]
   },
   {
     "question": "How does semantic search rank code chunks?",
-    "expected_files": ["backend/devmind/retrieval.py"]
+    "expected_files": [
+      "backend/devmind/retrieval.py"
+    ]
   },
   {
     "question": "How are source files split into chunks?",
-    "expected_files": ["backend/devmind/parser.py"]
+    "expected_files": [
+      "backend/devmind/parser.py"
+    ]
   },
   {
     "question": "Where is the prompt that tells the model not to invent code?",
-    "expected_files": ["backend/devmind/assistant.py"]
+    "expected_files": [
+      "backend/devmind/assistant.py"
+    ]
+  },
+  {
+    "question": "How are repository paths outside the allowed directory rejected?",
+    "expected_files": [
+      "backend/devmind/security.py"
+    ]
+  },
+  {
+    "question": "Where are embeddings requested from Ollama in batches?",
+    "expected_files": [
+      "backend/devmind/ollama_client.py",
+      "backend/devmind/ingestion.py"
+    ]
+  },
+  {
+    "question": "How does the frontend proxy API calls to the backend?",
+    "expected_files": [
+      "frontend/next.config.ts"
+    ]
+  },
+  {
+    "question": "Where is the SQLite table for code chunks created?",
+    "expected_files": [
+      "backend/devmind/database.py"
+    ]
+  },
+  {
+    "question": "How does ingestion avoid wiping the existing index when Ollama fails?",
+    "expected_files": [
+      "backend/devmind/ingestion.py",
+      "backend/devmind/database.py"
+    ]
+  },
+  {
+    "question": "Which file types and directories are ignored when indexing a repository?",
+    "expected_files": [
+      "backend/devmind/config.py"
+    ]
+  },
+  {
+    "question": "How are the backend and frontend containers configured?",
+    "expected_files": [
+      "docker-compose.yml"
+    ]
+  },
+  {
+    "question": "What does the CI workflow run?",
+    "expected_files": [
+      ".github/workflows/ci.yml"
+    ]
+  },
+  {
+    "question": "How does the UI call the explain and search endpoints?",
+    "expected_files": [
+      "frontend/app/page.tsx"
+    ]
+  },
+  {
+    "question": "How is a large class split into smaller chunks?",
+    "expected_files": [
+      "backend/devmind/parser.py"
+    ]
+  },
+  {
+    "question": "Where is the embedding batch size configured?",
+    "expected_files": [
+      "backend/devmind/config.py",
+      "backend/devmind/ingestion.py"
+    ]
+  },
+  {
+    "question": "Which function builds the prompt from the retrieved code context?",
+    "expected_files": [
+      "backend/devmind/assistant.py"
+    ]
   }
 ]

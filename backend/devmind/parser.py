@@ -50,25 +50,41 @@ IMPORT_NODES = {
 
 
 def split_large_text(text, max_chars=MAX_CHUNK_CHARS):
+    """Split text into chunks under max_chars, tracking line ranges.
+
+    Returns a list of (content, start_line, end_line) tuples where
+    line numbers are 1-indexed.
+    """
     chunks = []
     current = []
     current_length = 0
+    current_start_line = 1
 
-    for line in text.splitlines():
+    for line_index, line in enumerate(text.splitlines(), start=1):
         line_length = len(line) + 1
 
         if current and current_length + line_length > max_chars:
-            chunks.append("\n".join(current))
+            end_line = line_index - 1
+            chunks.append(("\n".join(current), current_start_line, end_line))
             current = []
             current_length = 0
+            current_start_line = line_index
 
         current.append(line)
         current_length += line_length
 
     if current:
-        chunks.append("\n".join(current))
+        end_line = len(text.splitlines())
+        chunks.append(("\n".join(current), current_start_line, end_line))
 
     return chunks
+
+
+def node_line_range(node):
+    """Return (start_line, end_line) as 1-indexed integers from a Tree-sitter node."""
+    start_line = node.start_point[0] + 1
+    end_line = node.end_point[0] + 1
+    return start_line, end_line
 
 
 def node_text(node, source):
@@ -140,6 +156,8 @@ def collect_chunks(node, source, index, path, language):
     target = unwrap(node)
     symbol = get_symbol(target, source, index)
 
+    start_line, end_line = node_line_range(target)
+
     # A large class is split into one chunk per member (Class.method).
     if target.type in CLASS_NODES and len(content) > MAX_CHUNK_CHARS:
         body = target.child_by_field_name("body")
@@ -162,7 +180,7 @@ def collect_chunks(node, source, index, path, language):
     pieces = (
         split_large_text(content)
         if len(content) > MAX_CHUNK_CHARS
-        else [content]
+        else [(content, start_line, end_line)]
     )
 
     return [
@@ -174,9 +192,16 @@ def collect_chunks(node, source, index, path, language):
                 else f"{symbol}_part_{piece_index}"
             ),
             "content": piece,
+            "start_line": line_start,
+            "end_line": line_end,
         }
-        for piece_index, piece in enumerate(pieces, start=1)
+        for piece_index, (piece, line_start, line_end) in enumerate(pieces, start=1)
     ]
+
+
+def _is_binary(data, sample_size=512):
+    """Detect binary content by checking for null bytes in the sample."""
+    return b"\x00" in data[:sample_size]
 
 
 def parse_source_file(file_path):
@@ -191,6 +216,10 @@ def parse_source_file(file_path):
             return []
 
         source = path.read_bytes()
+
+        if _is_binary(source):
+            return []
+
         text = source.decode("utf-8", errors="replace")
 
         parser = get_parser(language)
@@ -205,16 +234,17 @@ def parse_source_file(file_path):
             )
 
         if not chunks and text.strip():
-            chunks = [
+            pieces = split_large_text(text)
+            return [
                 {
                     "file_path": str(path),
                     "language": language,
                     "symbol": f"file_chunk_{index}",
                     "content": piece,
+                    "start_line": line_start,
+                    "end_line": line_end,
                 }
-                for index, piece in enumerate(
-                    split_large_text(text), start=1
-                )
+                for index, (piece, line_start, line_end) in enumerate(pieces, start=1)
             ]
 
         return chunks
@@ -226,16 +256,17 @@ def parse_source_file(file_path):
                 errors="replace"
             )
 
+            pieces = split_large_text(text)
             return [
                 {
                     "file_path": str(path),
                     "language": language,
                     "symbol": f"fallback_chunk_{index}",
                     "content": piece,
+                    "start_line": line_start,
+                    "end_line": line_end,
                 }
-                for index, piece in enumerate(
-                    split_large_text(text), start=1
-                )
+                for index, (piece, line_start, line_end) in enumerate(pieces, start=1)
             ]
         except OSError:
             return []
