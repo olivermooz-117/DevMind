@@ -53,3 +53,9 @@ evaluation/results/
 
 # Evaluation outputs
 evaluation-results/
+
+# Frontend test artifacts
+frontend/playwright-report/
+frontend/test-results/
+playwright-report/
+test-results/
