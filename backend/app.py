@@ -492,19 +492,6 @@ def chat_stream():
     )
 
 
-@app.get("/conversations")
-@limiter.limit(CONVERSATION_LIMIT)
-def conversations_list():
-    """List all conversations, most recently updated first."""
-    try:
-        return jsonify({"conversations": list_all_conversations()})
-    except Exception:
-        app.logger.exception("Could not load conversations")
-        return jsonify({
-            "error": "Could not load conversations"
-        }), 500
-
-
 @app.get("/conversations/<conversation_id>/export")
 @limiter.limit(CONVERSATION_LIMIT)
 def conversations_export(conversation_id):
@@ -566,6 +553,7 @@ def conversations_import():
         return jsonify({
             "error": "Could not import conversation"
         }), 500
+@app.get("/conversations")
 @limiter.limit(CONVERSATION_LIMIT)
 def conversations_list():
     """List all conversations, most recently updated first."""

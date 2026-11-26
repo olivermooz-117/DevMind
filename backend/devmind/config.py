@@ -35,8 +35,45 @@ SUPPORTED_EXTENSIONS = {
 }
 
 IGNORED_DIRS = {
-    ".git", "node_modules", "venv", ".venv", "__pycache__",
-    ".next", "dist", "build", "coverage", ".pytest_cache"
+    ".git",
+    "node_modules",
+    "venv",
+    ".venv",
+    "__pycache__",
+    ".next",
+    ".turbo",
+    ".vercel",
+    "dist",
+    "build",
+    "coverage",
+    "htmlcov",
+    ".pytest_cache",
+    ".mypy_cache",
+    ".ruff_cache",
+    ".tox",
+    ".nox",
+    "playwright-report",
+    "test-results",
+    "evaluation-results",
+}
+
+# Generated or dependency metadata that adds little value to code retrieval.
+IGNORED_FILES = {
+    "package-lock.json",
+    "npm-shrinkwrap.json",
+    "yarn.lock",
+    "pnpm-lock.yaml",
+    "poetry.lock",
+    "Pipfile.lock",
+    "uv.lock",
+}
+
+# Keep evaluation implementation code indexable, but never index benchmark
+# questions or prompt variants that could leak expected answers.
+IGNORED_PATHS = {
+    "evaluation/llm_questions.json",
+    "evaluation/questions.json",
+    "evaluation/prompts/variants.json",
 }
 
 MAX_FILE_BYTES = 500_000

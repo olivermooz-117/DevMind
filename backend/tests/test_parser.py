@@ -107,3 +107,88 @@ def test_large_class_is_split_into_methods(tmp_path):
 
     assert "Big.method_0" in symbols
     assert "Big.method_7" in symbols
+
+
+def test_discover_source_files_ignores_generated_directories(tmp_path):
+    (tmp_path / "main.py").write_text("def main(): pass", encoding="utf-8")
+
+    generated_dirs = [
+        "frontend/playwright-report",
+        "frontend/test-results",
+        "evaluation-results",
+        "node_modules",
+        ".next",
+    ]
+
+    for directory in generated_dirs:
+        generated = tmp_path / directory
+        generated.mkdir(parents=True)
+        (generated / "generated.py").write_text(
+            "def generated(): pass",
+            encoding="utf-8",
+        )
+
+    root, files = discover_source_files(tmp_path)
+
+    relative_files = {
+        file.relative_to(root).as_posix()
+        for file in files
+    }
+
+    assert "main.py" in relative_files
+    assert len(relative_files) == 1
+
+
+def test_discover_source_files_ignores_lockfiles(tmp_path):
+    (tmp_path / "main.py").write_text("def main(): pass", encoding="utf-8")
+    (tmp_path / "package-lock.json").write_text(
+        '{"packages": {}}',
+        encoding="utf-8",
+    )
+    (tmp_path / "yarn.lock").write_text("example@1.0.0:", encoding="utf-8")
+
+    root, files = discover_source_files(tmp_path)
+
+    relative_files = {
+        file.relative_to(root).as_posix()
+        for file in files
+    }
+
+    assert relative_files == {"main.py"}
+
+
+def test_discover_source_files_excludes_evaluation_datasets_but_keeps_code(
+    tmp_path,
+):
+    evaluation = tmp_path / "evaluation"
+    prompts = evaluation / "prompts"
+    prompts.mkdir(parents=True)
+
+    (evaluation / "harness.py").write_text(
+        "def evaluate(): pass",
+        encoding="utf-8",
+    )
+    (evaluation / "llm_questions.json").write_text(
+        '{"questions": []}',
+        encoding="utf-8",
+    )
+    (evaluation / "questions.json").write_text(
+        '{"questions": []}',
+        encoding="utf-8",
+    )
+    (prompts / "variants.json").write_text(
+        '{"baseline": "example"}',
+        encoding="utf-8",
+    )
+
+    root, files = discover_source_files(tmp_path)
+
+    relative_files = {
+        file.relative_to(root).as_posix()
+        for file in files
+    }
+
+    assert "evaluation/harness.py" in relative_files
+    assert "evaluation/llm_questions.json" not in relative_files
+    assert "evaluation/questions.json" not in relative_files
+    assert "evaluation/prompts/variants.json" not in relative_files

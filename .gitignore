@@ -49,3 +49,7 @@ coverage/
 *.log
 *.tmp
 *.bak
+evaluation/results/
+
+# Evaluation outputs
+evaluation-results/

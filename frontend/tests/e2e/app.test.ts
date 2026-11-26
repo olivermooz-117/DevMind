@@ -152,7 +152,7 @@ test.describe("DevMind application", () => {
     await input.fill("/tmp/outside");
     await page.getByRole("button", { name: /Index repository/ }).click();
 
-    const errorElements = page.getByText(/Repository path is outside the allowed directory/).all();
+    const errorElements = await page.getByText(/Repository path is outside the allowed directory/).all();
     await expect(errorElements[0]).toBeVisible();
   });
 
@@ -183,7 +183,7 @@ test.describe("DevMind application", () => {
     await page.getByRole("button", { name: /Send/ }).click();
 
     await expect(page.getByText(/This function is defined/)).toBeVisible();
-    const sourceElements = page.getByText(/src\/main\.py/).all();
+    const sourceElements = await page.getByText(/src\/main\.py/).all();
     await expect(sourceElements[0]).toBeVisible();
   });
 
@@ -197,7 +197,7 @@ test.describe("DevMind application", () => {
     await input.fill("/tmp/repo");
     await page.getByRole("button", { name: /Index repository/ }).click();
 
-    const errorElements = page.getByText(/Internal server error/).all();
+    const errorElements = await page.getByText(/Internal server error/).all();
     await expect(errorElements[0]).toBeVisible();
   });
 
@@ -213,7 +213,7 @@ test.describe("DevMind application", () => {
     await input.fill("/tmp/repo");
     await page.getByRole("button", { name: /Index repository/ }).click();
 
-    const errorElements = page.getByText(/Too many requests/).all();
+    const errorElements = await page.getByText(/Too many requests/).all();
     await expect(errorElements[0]).toBeVisible();
   });
 

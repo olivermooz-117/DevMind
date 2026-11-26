@@ -1,0 +1,4 @@
+-r requirements.txt
+lm-eval[api]
+transformers
+pytest
