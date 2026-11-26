@@ -1,0 +1,35 @@
+[
+  {
+    "question": "How does DevMind expose its application health endpoint?",
+    "expected_files": ["backend/app.py"],
+    "expected_terms": ["health", "GET", "healthy"]
+  },
+  {
+    "question": "How does DevMind communicate with Ollama to generate responses?",
+    "expected_files": ["backend/devmind/ollama_client.py"],
+    "expected_terms": ["api/generate", "model", "prompt", "requests.post"]
+  },
+  {
+    "question": "How does DevMind generate and store code embeddings?",
+    "expected_files": [
+      "backend/devmind/ollama_client.py",
+      "backend/devmind/database.py"
+    ],
+    "expected_terms": ["embedding", "Ollama", "SQLite"]
+  },
+  {
+    "question": "How does semantic search rank repository code chunks?",
+    "expected_files": ["backend/devmind/retrieval.py"],
+    "expected_terms": ["cosine", "similarity", "embedding"]
+  },
+  {
+    "question": "How does DevMind parse source code into searchable chunks?",
+    "expected_files": ["backend/devmind/parser.py"],
+    "expected_terms": ["tree-sitter", "function", "class"]
+  },
+  {
+    "question": "What safeguards prevent DevMind from inventing repository implementation details?",
+    "expected_files": ["backend/devmind/assistant.py"],
+    "expected_terms": ["repository context", "Never invent", "sources"]
+  }
+]

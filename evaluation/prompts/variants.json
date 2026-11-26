@@ -1,0 +1,38 @@
+[
+  {
+    "id": "health_endpoint",
+    "expected_files": ["backend/app.py"],
+    "wordings": [
+      "Where is the application health endpoint implemented?",
+      "Which file defines the /health route?",
+      "Find the health check API endpoint code."
+    ]
+  },
+  {
+    "id": "ollama_client",
+    "expected_files": ["backend/devmind/ollama_client.py"],
+    "wordings": [
+      "How does the application connect to Ollama?",
+      "Where are embeddings requested from the local model server?",
+      "Find the Ollama HTTP client wrapper."
+    ]
+  },
+  {
+    "id": "retrieval_ranking",
+    "expected_files": ["backend/devmind/retrieval.py"],
+    "wordings": [
+      "How does semantic search rank code chunks?",
+      "Where is cosine similarity used for retrieval?",
+      "Find the function that scores embedding similarity."
+    ]
+  },
+  {
+    "id": "security_paths",
+    "expected_files": ["backend/devmind/security.py"],
+    "wordings": [
+      "How are repository paths outside the allowed directory rejected?",
+      "Where is path sandboxing implemented?",
+      "Find resolve_repo_path security checks."
+    ]
+  }
+]

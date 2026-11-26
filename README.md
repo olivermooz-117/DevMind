@@ -11,6 +11,7 @@ with [Ollama](https://ollama.com); no cloud AI APIs.
 3. **Retrieve:** the question is embedded and the closest chunks are ranked using hybrid semantic + keyword search.
 4. **Answer:** `llama3.2:1b` answers using only the retrieved code, with file and line-number citations.
 5. **Conversation:** Q&A turns are persisted in SQLite with conversation IDs for multi-turn context.
+6. **Stream:** AI responses stream progressively from Ollama via Server-Sent Events.
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) and [docs/EVALUATION.md](docs/EVALUATION.md).
 
@@ -126,7 +127,73 @@ files with line numbers. Example:
 In the frontend, citations are clickable and open the source file at the
 referenced line.
 
-## Ingestion reliability
+## Streaming AI responses
+
+Chat responses stream progressively from Ollama using Server-Sent Events
+(SSE). The `/chat/stream` endpoint accepts the same request body as `/chat`
+and returns `text/event-stream` with JSON data lines containing:
+`{"text": "...", "done": bool, "sources": [...], "conversation_id": "...", "citation_keys": [...]}`.
+
+The frontend displays generated text progressively and supports cancellation
+via AbortController. Interrupted streams are handled gracefully — cancelled
+requests do not leave incomplete assistant messages presented as successful
+answers.
+
+Rate limit: `DEVMIND_RATE_LIMIT_STREAM` (default: 60/minute).
+
+## Conversation export and import
+
+Conversations can be exported as JSON or Markdown and imported back:
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `DEVMIND_RATE_LIMIT_CONVERSATION` | 120/minute | Conversation API endpoints |
+
+### Conversation API
+
+- `POST /conversations` — Create a new conversation (optional `repo_path`).
+- `GET /conversations` — List all conversations, most recent first.
+- `GET /conversations/<id>` — Get a conversation with all its messages.
+- `DELETE /conversations/<id>` — Delete a conversation and its messages.
+- `GET /conversations/<id>/export?format=json|markdown` — Export a conversation.
+- `POST /conversations/import` — Import a conversation from JSON.
+- `POST /chat` — Ask a question. Include `conversation_id` to continue an
+  existing conversation; omit it to start a new one.
+- `POST /chat/stream` — Stream an AI response using SSE.
+
+### Citation format
+
+Citations use the format `[FILE:path:line]` and reference specific source
+files with line numbers. Example:
+
+```
+[FILE:src/auth.py:42]
+```
+
+In the frontend, citations are clickable and open the source file at the
+referenced line.
+
+## Multi-repository intelligence
+
+The `/search` endpoint supports searching across multiple repositories:
+
+- `repo_path` (string, backward compatible) — Search a single repository.
+- `repo_paths` (array of strings) — Search across multiple repositories.
+
+Each result includes a `repo_path` field indicating which repository it came
+from. Repository isolation is maintained — results never mix repositories
+accidentally. All repository paths are validated against `DEVMIND_ALLOWED_ROOT`.
+
+The frontend displays repository labels on search results and citations, and
+supports selecting multiple repositories for comparison queries.
+
+## Streaming architecture
+
+The streaming endpoint uses Ollama's native streaming capability
+(`stream: true`) and forwards text chunks via Server-Sent Events. Each SSE
+data line contains a JSON object with the incremental text, a `done` flag,
+sources, conversation ID, and citation keys. The frontend accumulates chunks
+and persists the complete message when `done` is true.
 
 - A failed re-index never destroys a previously valid index. Embeddings are
   generated before the existing index is replaced; if Ollama fails, the old
@@ -185,6 +252,29 @@ database write duration. Database lock retries are logged as warnings.
 
 Logs never include absolute filesystem paths, API secrets, or internal
 exception traces.
+
+## Ingestion reliability
+
+- A failed re-index never destroys a previously valid index. Embeddings are
+  generated before the existing index is replaced; if Ollama fails, the old
+  index remains intact.
+- Database changes are atomic: chunks and embedding metadata are written in a
+  single transaction.
+- Embeddings are validated before persistence (count match, non-zero
+  dimensions, consistent dimensions across all chunks).
+- Transient Ollama connection failures are retried with exponential backoff
+  (up to 3 attempts).
+- Binary files are automatically skipped during ingestion.
+- Concurrent ingestion of the same repository is serialized per repository.
+
+## SQLite concurrency
+
+- WAL (Write-Ahead Logging) journal mode is enabled for concurrent reads.
+- A 30-second busy timeout handles transient lock contention.
+- Retry logic handles `database is locked` errors with up to 3 attempts.
+- SQLite does not support connection pooling; each request opens its own
+  connection. For high-concurrency deployments, consider running a single
+  backend instance.
 
 ## Run with Docker
 

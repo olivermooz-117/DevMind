@@ -5,6 +5,8 @@ from tree_sitter_language_pack import get_parser
 from .config import (
     SUPPORTED_EXTENSIONS,
     IGNORED_DIRS,
+    IGNORED_FILES,
+    IGNORED_PATHS,
     MAX_FILE_BYTES,
     MAX_CHUNK_CHARS,
 )
@@ -284,7 +286,16 @@ def discover_source_files(repo_path):
         if not current_dir.is_file():
             continue
 
-        if any(part in IGNORED_DIRS for part in current_dir.parts):
+        relative_path = current_dir.relative_to(root)
+        relative_parts = relative_path.parts
+
+        if any(part in IGNORED_DIRS for part in relative_parts[:-1]):
+            continue
+
+        if current_dir.name in IGNORED_FILES:
+            continue
+
+        if relative_path.as_posix() in IGNORED_PATHS:
             continue
 
         if current_dir.suffix.lower() not in SUPPORTED_EXTENSIONS:
