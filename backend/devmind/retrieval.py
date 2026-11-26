@@ -8,7 +8,13 @@ from .database import (
     get_repository_embedding_metadata,
 )
 from .ollama_client import create_embedding
-from .config import EMBED_MODEL, MAX_RESULTS_PER_FILE, MAX_SEARCH_RESULTS
+from .config import (
+    EMBED_MODEL,
+    MAX_RESULTS_PER_FILE,
+    MAX_SEARCH_RESULTS,
+    HYBRID_SEMANTIC_WEIGHT,
+    HYBRID_KEYWORD_WEIGHT,
+)
 
 
 MAX_HYBRID_CANDIDATES = 50
@@ -81,16 +87,19 @@ def search_code(query, repo_paths=None, limit=None, use_hybrid=True,
     else:
         repo_path_set = set(repo_paths)
 
-    chunks = get_repository_chunks(None)  # Get all chunks, filter below
+    # Load only the requested repositories when scoped; avoid full-table scan.
+    if repo_path_set is None:
+        chunks = get_repository_chunks(None)
+    elif len(repo_path_set) == 1:
+        only = next(iter(repo_path_set))
+        chunks = get_repository_chunks(only)
+    else:
+        chunks = []
+        for path in repo_path_set:
+            chunks.extend(get_repository_chunks(path))
 
     if not chunks:
         return []
-
-    # Filter chunks by repo_path if specified
-    if repo_path_set is not None:
-        chunks = [c for c in chunks if c["repo_path"] in repo_path_set]
-        if not chunks:
-            return []
 
     # A repository must have metadata from a successful, current ingestion.
     repository_paths = {chunk["repo_path"] for chunk in chunks}
@@ -151,11 +160,13 @@ def search_code(query, repo_paths=None, limit=None, use_hybrid=True,
             [_keyword_score(query, chunk["content"]) for chunk in chunks],
             dtype=np.float32,
         )
-        # Combine: 70% semantic + 30% keyword
         semantic_norm = _normalize_scores(semantic_scores.tolist())
         keyword_norm = _normalize_scores(keyword_scores.tolist())
         combined_scores = np.asarray(
-            [0.7 * s + 0.3 * k for s, k in zip(semantic_norm, keyword_norm)],
+            [
+                HYBRID_SEMANTIC_WEIGHT * s + HYBRID_KEYWORD_WEIGHT * k
+                for s, k in zip(semantic_norm, keyword_norm)
+            ],
             dtype=np.float32,
         )
     else:

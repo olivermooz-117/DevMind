@@ -283,27 +283,43 @@ def discover_source_files(repo_path):
     files = []
 
     for current_dir in root.rglob("*"):
-        if not current_dir.is_file():
+        # Follow only real files; skip broken links and non-files.
+        try:
+            if not current_dir.is_file():
+                continue
+        except OSError:
             continue
 
-        relative_path = current_dir.relative_to(root)
+        # Reject symlinks (or hard paths) that resolve outside the repo root.
+        try:
+            resolved = current_dir.resolve(strict=True)
+        except (OSError, RuntimeError):
+            continue
+        if root not in resolved.parents and resolved != root:
+            continue
+        # Relative path must still be under root for display/indexing.
+        try:
+            relative_path = resolved.relative_to(root)
+        except ValueError:
+            continue
+
         relative_parts = relative_path.parts
 
         if any(part in IGNORED_DIRS for part in relative_parts[:-1]):
             continue
 
-        if current_dir.name in IGNORED_FILES:
+        if resolved.name in IGNORED_FILES:
             continue
 
         if relative_path.as_posix() in IGNORED_PATHS:
             continue
 
-        if current_dir.suffix.lower() not in SUPPORTED_EXTENSIONS:
+        if resolved.suffix.lower() not in SUPPORTED_EXTENSIONS:
             continue
 
         try:
-            if current_dir.stat().st_size <= MAX_FILE_BYTES:
-                files.append(current_dir)
+            if resolved.stat().st_size <= MAX_FILE_BYTES:
+                files.append(resolved)
         except OSError:
             continue
 

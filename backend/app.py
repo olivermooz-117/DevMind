@@ -256,10 +256,9 @@ def ingest():
     repo_path = data.get("repo_path")
     repo_paths = data.get("repo_paths")
 
-    # Resolve repository paths against the allowed root
     resolved_paths = []
+    invalid_paths = []
 
-    # Handle single repo_path (backward compatible)
     if repo_path is not None:
         if not isinstance(repo_path, str):
             return jsonify({"error": "repo_path must be a string"}), 400
@@ -268,22 +267,44 @@ def ingest():
         except ValueError as error:
             return jsonify({"error": str(error)}), 400
 
-    # Handle multiple repo_paths
     if repo_paths is not None:
         if not isinstance(repo_paths, list):
             return jsonify({"error": "repo_paths must be a list"}), 400
+        if not repo_paths:
+            return jsonify({"error": "repo_paths must not be empty"}), 400
         for rp in repo_paths:
-            try:
-                resolved_paths.append(str(resolve_repo_path(rp)))
-            except ValueError:
+            if not isinstance(rp, str):
+                invalid_paths.append(rp)
                 continue
+            try:
+                resolved = str(resolve_repo_path(rp))
+                if resolved not in resolved_paths:
+                    resolved_paths.append(resolved)
+            except ValueError:
+                invalid_paths.append(rp)
+
+        # Caller explicitly scoped repos: do not silently drop a fully invalid list
+        if not resolved_paths:
+            return jsonify({
+                "error": "No valid repository paths in repo_paths",
+                "invalid_paths": invalid_paths,
+            }), 400
 
     if not resolved_paths:
         return jsonify({"error": "At least one valid repo_path is required"}), 400
 
     try:
-        # Index the first repository; additional repos can be indexed separately
-        return jsonify(ingest_repository(str(resolved_paths[0])))
+        results = []
+        for path in resolved_paths:
+            results.append(ingest_repository(path))
+        # Backward compatible single-repo response shape
+        if len(results) == 1:
+            return jsonify(results[0])
+        return jsonify({
+            "repositories": results,
+            "indexed": len(results),
+            "invalid_paths": invalid_paths,
+        })
     except ValueError as error:
         return jsonify({"error": str(error)}), 400
     except requests.exceptions.RequestException as error:
@@ -311,11 +332,11 @@ def semantic_search():
     except (TypeError, ValueError) as error:
         return jsonify({"error": str(error)}), 400
 
-    # Resolve repository paths against the allowed root
     resolved_paths = []
+    scope_requested = False
 
-    # Handle single repo_path (backward compatible)
     if repo_path is not None:
+        scope_requested = True
         if not isinstance(repo_path, str):
             return jsonify({"error": "repo_path must be a string"}), 400
         try:
@@ -323,21 +344,31 @@ def semantic_search():
         except ValueError as error:
             return jsonify({"error": str(error)}), 400
 
-    # Handle multiple repo_paths
     if repo_paths is not None:
+        scope_requested = True
         if not isinstance(repo_paths, list):
             return jsonify({"error": "repo_paths must be a list"}), 400
+        if not repo_paths:
+            return jsonify({"error": "repo_paths must not be empty"}), 400
         for rp in repo_paths:
-            try:
-                resolved_paths.append(str(resolve_repo_path(rp)))
-            except ValueError:
-                # Skip invalid paths silently
+            if not isinstance(rp, str):
                 continue
+            try:
+                resolved = str(resolve_repo_path(rp))
+                if resolved not in resolved_paths:
+                    resolved_paths.append(resolved)
+            except ValueError:
+                continue
+        # Explicit scope that resolved to nothing must not fall back to "all repos"
+        if not resolved_paths:
+            return jsonify({
+                "error": "No valid repository paths in repo_paths",
+            }), 400
 
     try:
         results = search_code(
             query.strip(),
-            repo_paths=resolved_paths if resolved_paths else None,
+            repo_paths=resolved_paths if scope_requested else None,
             limit=limit,
         )
         return jsonify({"results": results})
